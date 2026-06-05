@@ -668,19 +668,31 @@ addHandler('runWineCommand', async (e, args) => runWineCommand(args))
 /// IPC handlers begin here.
 
 addHandler('checkGameUpdates', async (): Promise<string[]> => {
-  let oldGames: string[] = []
   const { autoUpdateGames } = GlobalConfig.get().getSettings()
-  for (const runner of Object.keys(
+  const runners = Object.keys(
     libraryManagerMap
-  ) as (keyof typeof libraryManagerMap)[]) {
-    let gamesToUpdate = await libraryManagerMap[runner].listUpdateableGames()
-    if (autoUpdateGames) {
-      gamesToUpdate = autoUpdate(runner, gamesToUpdate)
-    }
-    oldGames = [...oldGames, ...gamesToUpdate]
-  }
+  ) as (keyof typeof libraryManagerMap)[]
 
-  return oldGames
+  const results = await Promise.allSettled(
+    runners.map(async (runner) => {
+      let gamesToUpdate = await libraryManagerMap[runner].listUpdateableGames()
+      if (autoUpdateGames) {
+        gamesToUpdate = autoUpdate(runner, gamesToUpdate)
+      }
+      return gamesToUpdate
+    })
+  )
+
+  return results.flatMap((result) => {
+    if (result.status === 'rejected') {
+      logError(
+        `Update check failed for a runner: ${result.reason}`,
+        LogPrefix.Backend
+      )
+      return []
+    }
+    return result.value
+  })
 })
 
 addHandler('getEpicGamesStatus', async () => isEpicServiceOffline())

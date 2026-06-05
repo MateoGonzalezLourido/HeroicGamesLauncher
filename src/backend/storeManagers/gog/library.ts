@@ -807,6 +807,29 @@ export async function importGame(data: GOGImportData, executablePath: string) {
   sendFrontendMessage('pushGameToLibrary', gameData)
 }
 
+/*
+An inline p-limit to limit the number of simultaneous calls to the GOG API. Increasing the limit reduces the maximum time it takes to scan all games, but slightly impacts performance.
+*/
+async function pAll<T>(
+  tasks: (() => Promise<T>)[],
+  concurrency: number
+): Promise<T[]> {
+  const results: T[] = []
+  let i = 0
+
+  async function worker() {
+    while (i < tasks.length) {
+      const idx = i++
+      results[idx] = await tasks[idx]()
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, tasks.length) }, worker)
+  )
+  return results
+}
+
 // This checks for updates of Windows and Mac titles
 // Linux installers need to be checked differently
 export async function listUpdateableGames(): Promise<string[]> {
@@ -815,35 +838,43 @@ export async function listUpdateableGames(): Promise<string[]> {
   }
   const credentials = await GOGUser.getCredentials()
   const installed = Array.from(installedGames.values())
-  const updateable: Array<string> = []
-  for (const game of installed) {
-    if (!game.appName) {
-      continue
-    }
+
+  const tasks = installed.map((game) => async (): Promise<string | null> => {
+    if (!game.appName) return null
 
     if (game.pinnedVersion) {
       logWarning(
         ['Game', game.appName, 'has pinned version, update check skipped'],
         { prefix: LogPrefix.Gog }
       )
-      continue
+      return null
     }
-    // use different check for linux games
-    if (game.platform === 'linux') {
-      if (!(await checkForLinuxInstallerUpdate(game.appName, game.version)))
-        updateable.push(game.appName)
-      continue
+
+    try {
+      if (game.platform === 'linux') {
+        const upToDate = await checkForLinuxInstallerUpdate(
+          game.appName,
+          game.version
+        )
+        return upToDate ? null : game.appName
+      }
+      const hasUpdate = await checkForGameUpdate(
+        game.appName,
+        game.platform,
+        game?.versionEtag,
+        credentials?.access_token
+      )
+      return hasUpdate ? game.appName : null
+    } catch (error) {
+      logWarning(`Update check failed for ${game.appName}: ${error}`, {
+        prefix: LogPrefix.Gog
+      })
+      return null
     }
-    const hasUpdate = await checkForGameUpdate(
-      game.appName,
-      game.platform,
-      game?.versionEtag,
-      credentials?.access_token
-    )
-    if (hasUpdate) {
-      updateable.push(game.appName)
-    }
-  }
+  })
+
+  const results = await pAll(tasks, 5)
+  const updateable = results.filter((name): name is string => name !== null)
   logInfo(`Found ${updateable.length} game(s) to update`, LogPrefix.Gog)
   return updateable
 }
