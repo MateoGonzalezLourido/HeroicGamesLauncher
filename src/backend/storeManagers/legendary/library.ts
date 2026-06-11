@@ -337,43 +337,49 @@ export async function listUpdateableGames(): Promise<string[]> {
     )
   }
 
-  const updateableGames: string[] = []
+  // Build platform → appName → build_version index to avoid O(n × assets) find()
+  const assetIndex = new Map<string, Map<string, string>>()
   for (const [platform, assets] of Object.entries(assetsJson)) {
-    installedGames.forEach(
-      ({ version: currentVersion, platform: installedPlatform }, appName) => {
-        if (installedPlatform === platform) {
-          const currentAsset = assets.find((asset) => {
-            return asset.app_name === appName
-          })
-          if (!currentAsset) {
-            logWarning(
-              [
-                'Game with AppName',
-                appName,
-                'is installed but was not found on account'
-              ],
-              LogPrefix.Legendary
-            )
-            return
-          }
-          const latestVersion = currentAsset.build_version
-          if (currentVersion !== latestVersion) {
-            logDebug(
-              [
-                'Update is available for',
-                `${appName}:`,
-                currentVersion,
-                '!=',
-                latestVersion
-              ],
-              LogPrefix.Legendary
-            )
-            updateableGames.push(appName)
-          }
-        }
-      }
-    )
+    const byName = new Map<string, string>()
+    for (const asset of assets) {
+      byName.set(asset.app_name, asset.build_version)
+    }
+    assetIndex.set(platform, byName)
   }
+
+  const updateableGames: string[] = []
+  installedGames.forEach(
+    ({ version: currentVersion, platform: installedPlatform }, appName) => {
+      const platformAssets = assetIndex.get(installedPlatform)
+      if (!platformAssets) return
+
+      const latestVersion = platformAssets.get(appName)
+      if (latestVersion === undefined) {
+        logWarning(
+          [
+            'Game with AppName',
+            appName,
+            'is installed but was not found on account'
+          ],
+          LogPrefix.Legendary
+        )
+        return
+      }
+      if (currentVersion !== latestVersion) {
+        logDebug(
+          [
+            'Update is available for',
+            `${appName}:`,
+            currentVersion,
+            '!=',
+            latestVersion
+          ],
+          LogPrefix.Legendary
+        )
+        updateableGames.push(appName)
+      }
+    }
+  )
   logInfo(
     [
       'Found',
